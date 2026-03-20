@@ -1,0 +1,2 @@
+# Sem dependências obrigatórias.
+# Opcional no futuro: Pillow para ampliar formatos suportados.
