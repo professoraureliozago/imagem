@@ -1,2 +1,1 @@
-# Sem dependências obrigatórias.
-# Opcional no futuro: Pillow para ampliar formatos suportados.
+Pillow>=10.0.0

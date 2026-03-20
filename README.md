@@ -1,6 +1,6 @@
 # Sistema de Reconhecimento de Imagens
 
-Aplicativo desktop em **Python + Tkinter** com interface moderna para:
+Aplicativo desktop em **Python + Tkinter + Pillow** com interface moderna para:
 
 - **Cadastrar imagens para treinamento** por categoria.
 - **Salvar a base localmente** em SQLite.
@@ -8,10 +8,10 @@ Aplicativo desktop em **Python + Tkinter** com interface moderna para:
 
 ## Como funciona
 
-Este projeto foi otimizado para ser simples de executar no VS Code em Windows, sem depender de bibliotecas externas:
+Este projeto foi otimizado para ser simples de executar no VS Code em Windows, com suporte aos formatos de imagem mais usados:
 
 1. O usuário cadastra várias imagens semelhantes e informa o nome da categoria.
-2. O sistema extrai características visuais leves diretamente com `tkinter.PhotoImage`:
+2. O sistema extrai características visuais leves com `Pillow`:
    - hash perceptual;
    - histograma de cores;
    - perfil de bordas.
@@ -28,23 +28,13 @@ Este projeto foi otimizado para ser simples de executar no VS Code em Windows, s
 - Organização automática das imagens treinadas em `data/images/<categoria>/`.
 - Fluxo separado para **treinamento** e **reconhecimento**.
 - Pronto para rodar no VS Code.
-- Sem dependências obrigatórias além do Python com Tkinter.
+- Suporte a **JPG, JPEG, PNG, BMP, GIF, WebP, PPM e PGM**.
 
 ## Requisitos
 
 - Python 3.11+
 - Tkinter disponível no Python
-
-## Formatos suportados nesta versão
-
-Como a versão atual foi otimizada para rodar sem instalar pacotes adicionais, os formatos suportados dependem do `Tkinter/Tk`:
-
-- PNG
-- GIF
-- PPM
-- PGM
-
-Se você quiser suporte amplo a JPG, JPEG, BMP e WebP, a melhor evolução é integrar `Pillow` em uma próxima versão.
+- Pillow instalado via `requirements.txt`
 
 ## Instalação
 
@@ -73,7 +63,7 @@ Para melhorar a qualidade do reconhecimento:
   - exportação/importação da base;
   - webcam para captura ao vivo;
   - API com FastAPI para integrar com outros sistemas;
-  - suporte expandido a formatos com `Pillow`.
+  - score calibrado com validação da base.
 
 ## Estrutura
 

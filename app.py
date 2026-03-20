@@ -10,12 +10,28 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable
 
+try:
+    from PIL import Image, ImageOps, ImageTk
+except ImportError:  # pragma: no cover
+    Image = None
+    ImageOps = None
+    ImageTk = None
+
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 IMAGE_DIR = DATA_DIR / "images"
 DB_PATH = DATA_DIR / "catalog.db"
 THUMBNAIL_SIZE = (320, 320)
-IMAGE_EXTENSIONS = {".png", ".gif", ".ppm", ".pgm"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ppm", ".pgm"}
+SUPPORTED_FILE_TYPES = [("Imagens", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ppm *.pgm")]
+
+
+def ensure_pillow_available() -> None:
+    if Image is None or ImageOps is None or ImageTk is None:
+        raise RuntimeError(
+            "Este aplicativo precisa da biblioteca Pillow para abrir JPG, JPEG, PNG, BMP, GIF e WebP. "
+            "Instale com: pip install -r requirements.txt"
+        )
 
 
 def ensure_storage() -> None:
@@ -42,54 +58,35 @@ class Sample:
     features: list[float]
 
 
-class PhotoImageLoader:
+class PillowImageLoader:
     @staticmethod
-    def load(path: Path) -> tk.PhotoImage:
+    def load_rgb(path: Path) -> Image.Image:
+        ensure_pillow_available()
         try:
-            return tk.PhotoImage(file=str(path))
-        except tk.TclError as exc:
-            raise ValueError(
-                "Formato não suportado nesta instalação do Tkinter. Use PNG, GIF, PPM ou PGM."
-            ) from exc
+            with Image.open(path) as image:
+                return ImageOps.exif_transpose(image).convert("RGB")
+        except OSError as exc:
+            raise ValueError(f"Não foi possível abrir a imagem '{path.name}'.") from exc
 
 
 class FeatureExtractor:
-    """Extrai características sem dependências externas a partir do PhotoImage do Tkinter."""
+    """Extrai características com Pillow para suportar formatos comuns como JPG/JPEG."""
 
     @staticmethod
     def extract(image_path: Path) -> list[float]:
-        photo = PhotoImageLoader.load(image_path)
-        width = photo.width()
-        height = photo.height()
-        if width <= 0 or height <= 0:
+        image = PillowImageLoader.load_rgb(image_path)
+        if image.width <= 0 or image.height <= 0:
             raise ValueError("Imagem inválida.")
 
-        resized = photo.subsample(max(1, width // 64), max(1, height // 64)) if width > 64 or height > 64 else photo
-        pixels = []
-        for y in range(resized.height()):
-            row = []
-            for x in range(resized.width()):
-                color = resized.get(x, y)
-                if isinstance(color, tuple):
-                    rgb = color[:3]
-                else:
-                    rgb = FeatureExtractor._hex_to_rgb(color)
-                row.append(rgb)
-            pixels.append(row)
+        resized = image.copy()
+        resized.thumbnail((64, 64), Image.Resampling.LANCZOS)
+        pixels = list(resized.getdata())
+        rows = [pixels[index * resized.width:(index + 1) * resized.width] for index in range(resized.height)]
 
-        dhash = FeatureExtractor._difference_hash(pixels)
-        histogram = FeatureExtractor._color_histogram(pixels)
-        edges = FeatureExtractor._edge_profile(pixels)
+        dhash = FeatureExtractor._difference_hash(rows)
+        histogram = FeatureExtractor._color_histogram(rows)
+        edges = FeatureExtractor._edge_profile(rows)
         return dhash + histogram + edges
-
-    @staticmethod
-    def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-        color = color.lstrip("#")
-        if len(color) == 12:
-            return tuple(int(color[idx:idx + 4], 16) // 257 for idx in range(0, 12, 4))  # type: ignore[return-value]
-        if len(color) == 6:
-            return tuple(int(color[idx:idx + 2], 16) for idx in range(0, 6, 2))  # type: ignore[return-value]
-        raise ValueError(f"Cor inválida: {color}")
 
     @staticmethod
     def _to_grayscale(pixels: list[list[tuple[int, int, int]]]) -> list[list[float]]:
@@ -229,6 +226,7 @@ class RecognitionService:
 class ModernImageRecognitionApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        ensure_pillow_available()
         ensure_storage()
         self.title("Imagem Inteligente • Cadastro e Reconhecimento")
         self.geometry("1180x720")
@@ -239,7 +237,7 @@ class ModernImageRecognitionApp(tk.Tk):
         self.recognition_service = RecognitionService(self.repository)
         self.selected_train_images: list[Path] = []
         self.selected_recognition_image: Path | None = None
-        self._preview_photo: tk.PhotoImage | None = None
+        self._preview_photo: ImageTk.PhotoImage | None = None
 
         self._setup_style()
         self._build_layout()
@@ -272,7 +270,7 @@ class ModernImageRecognitionApp(tk.Tk):
         ttk.Label(header, text="Sistema de Reconhecimento de Imagens", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Cadastre imagens por categoria, treine a base localmente e identifique novas imagens com uma interface moderna.",
+            text="Cadastre imagens por categoria, treine a base localmente e identifique novas imagens com suporte a JPG, JPEG, PNG, BMP, GIF e WebP.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -352,14 +350,14 @@ class ModernImageRecognitionApp(tk.Tk):
             "Sugestão de uso:\n"
             "• Cadastre entre 5 e 20 imagens por categoria.\n"
             "• Misture ângulos, iluminação e fundos diferentes.\n"
-            "• Para produção futura, você pode evoluir para IA com embeddings (CLIP / TensorFlow / PyTorch).",
+            "• Formatos suportados: JPG, JPEG, PNG, BMP, GIF, WebP, PPM e PGM.",
         )
         self.result_text.configure(state="disabled")
 
     def select_training_images(self) -> None:
         files = filedialog.askopenfilenames(
             title="Selecione as imagens de treinamento",
-            filetypes=[("Imagens suportadas pelo Tkinter", "*.png *.gif *.ppm *.pgm")],
+            filetypes=SUPPORTED_FILE_TYPES,
         )
         self.selected_train_images = [Path(path) for path in files if Path(path).suffix.lower() in IMAGE_EXTENSIONS]
         if self.selected_train_images:
@@ -402,7 +400,7 @@ class ModernImageRecognitionApp(tk.Tk):
     def select_recognition_image(self) -> None:
         file_path = filedialog.askopenfilename(
             title="Escolha uma imagem para reconhecimento",
-            filetypes=[("Imagens suportadas pelo Tkinter", "*.png *.gif *.ppm *.pgm")],
+            filetypes=SUPPORTED_FILE_TYPES,
         )
         if not file_path:
             return
@@ -411,13 +409,12 @@ class ModernImageRecognitionApp(tk.Tk):
 
     def _load_preview(self, image_path: Path) -> None:
         try:
-            photo = PhotoImageLoader.load(image_path)
+            image = PillowImageLoader.load_rgb(image_path)
         except ValueError as exc:
             messagebox.showwarning("Formato não suportado", str(exc))
             return
-        divisor_x = max(1, photo.width() // THUMBNAIL_SIZE[0])
-        divisor_y = max(1, photo.height() // THUMBNAIL_SIZE[1])
-        self._preview_photo = photo.subsample(divisor_x, divisor_y) if divisor_x > 1 or divisor_y > 1 else photo
+        image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+        self._preview_photo = ImageTk.PhotoImage(image)
         self.preview_label.configure(image=self._preview_photo, text="")
 
     def run_recognition(self) -> None:
@@ -456,7 +453,14 @@ class ModernImageRecognitionApp(tk.Tk):
 
 
 def main() -> None:
-    app = ModernImageRecognitionApp()
+    try:
+        app = ModernImageRecognitionApp()
+    except RuntimeError as exc:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Dependência ausente", str(exc))
+        root.destroy()
+        raise SystemExit(1) from exc
     app.mainloop()
 
 
