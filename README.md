@@ -135,6 +135,10 @@ Esse erro pode acontecer com combinações específicas de versões do `transfor
 
 Esse erro acontece quando uma projeção visual do CLIP é aplicada sobre um embedding que já estava projetado, gerando incompatibilidade de dimensões. O projeto foi ajustado para usar primeiro `image_embeds` da saída completa do modelo e só projetar `pooler_output` quando as dimensões realmente forem compatíveis.
 
+### 5. `You have to specify input_ids` ao cadastrar imagem no modo IA
+
+Esse erro acontece quando o modelo CLIP é chamado pelo caminho de `forward` completo, que em algumas versões espera entradas de texto além da imagem. O projeto foi ajustado para extrair embeddings de imagem usando apenas `pixel_values`, evitando a exigência de `input_ids` no cadastro e no reconhecimento.
+
 ## Próximos upgrades possíveis
 
 - salvar um índice vetorial para busca mais rápida;

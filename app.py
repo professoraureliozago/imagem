@@ -268,13 +268,14 @@ class AIEmbeddingExtractor:
         torch, _, _ = DependencyManager.import_ai_stack()
         image = PillowImageLoader.load_rgb(image_path)
         inputs = cls._processor(images=image, return_tensors="pt")
-        inputs = {key: value.to(cls._device) for key, value in inputs.items()}
+        pixel_values = inputs["pixel_values"].to(cls._device)
         with torch.no_grad():
-            raw_output = cls._model(**inputs)
-            embedding = cls._coerce_embedding_tensor(raw_output, torch)
-            if embedding.shape[-1] not in (512, 768):
-                fallback_output = cls._model.get_image_features(**inputs)
-                embedding = cls._coerce_embedding_tensor(fallback_output, torch)
+            try:
+                raw_output = cls._model.get_image_features(pixel_values=pixel_values)
+                embedding = cls._coerce_embedding_tensor(raw_output, torch)
+            except Exception:
+                vision_output = cls._model.vision_model(pixel_values=pixel_values)
+                embedding = cls._coerce_embedding_tensor(vision_output, torch)
             embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
         return embedding[0].detach().cpu().tolist()
 
