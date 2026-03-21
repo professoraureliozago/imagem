@@ -1,24 +1,44 @@
 # Sistema de Reconhecimento de Imagens
 
-Aplicativo desktop em **Python + Tkinter + Pillow** com interface moderna para:
+Aplicativo desktop em **Python + Tkinter + Pillow**, agora com dois motores de reconhecimento:
 
-- **Cadastrar imagens para treinamento** por categoria.
-- **Salvar a base localmente** em SQLite.
-- **Reconhecer novas imagens** comparando características visuais com a base treinada.
+- **Modo IA com embeddings CLIP** para uma análise mais avançada.
+- **Modo clássico** com hash perceptual, histograma de cores e perfil de bordas.
+- **Cadastro de imagens para treinamento** por categoria.
+- **Reconhecimento de novas imagens** com busca na base local em SQLite.
 
-## Como funciona
+## O que foi implementado nesta versão avançada
 
-Este projeto foi otimizado para ser simples de executar no VS Code em Windows, com suporte aos formatos de imagem mais usados:
+O próximo passo com IA já foi incorporado ao projeto:
 
-1. O usuário cadastra várias imagens semelhantes e informa o nome da categoria.
-2. O sistema extrai características visuais leves com `Pillow`:
-   - hash perceptual;
-   - histograma de cores;
-   - perfil de bordas.
-3. Quando uma nova imagem é enviada para reconhecimento, o sistema compara os vetores com a base cadastrada.
-4. O app retorna a categoria mais provável e mostra um nível de confiança estimado.
+1. O app oferece um seletor entre **IA (CLIP)** e **modo clássico**.
+2. No modo IA, ele usa embeddings visuais do modelo **`openai/clip-vit-base-patch32`**.
+3. As amostras de treinamento ficam separadas por backend no banco local.
+4. Se `torch` e `transformers` não estiverem instalados no ambiente, o app faz **fallback automático para o modo clássico**.
 
-> Observação: esta abordagem é excelente para um MVP offline e local. Para uma versão mais avançada, o próximo passo ideal é usar embeddings de IA (ex.: CLIP, TensorFlow ou PyTorch).
+Isso permite começar com IA sem perder a usabilidade do MVP em máquinas onde a stack completa ainda não esteja pronta.
+
+## Como funciona o modo IA
+
+### Fluxo de treinamento
+
+- Selecione o motor **IA (CLIP embeddings)**.
+- Cadastre várias imagens da mesma categoria.
+- O sistema extrai embeddings vetoriais com CLIP e armazena no SQLite.
+
+### Fluxo de reconhecimento
+
+- Escolha novamente o motor **IA (CLIP embeddings)**.
+- Insira uma imagem para consulta.
+- O sistema gera o embedding da imagem e compara com os embeddings treinados usando similaridade vetorial.
+
+## Como funciona o modo clássico
+
+O modo clássico continua disponível como fallback e também como baseline local:
+
+- hash perceptual;
+- histograma de cores;
+- perfil de bordas.
 
 ## Diferenciais incluídos
 
@@ -26,15 +46,17 @@ Este projeto foi otimizado para ser simples de executar no VS Code em Windows, c
 - Seleção de imagens por janela nativa do Windows (`filedialog`).
 - Armazenamento local em `data/catalog.db`.
 - Organização automática das imagens treinadas em `data/images/<categoria>/`.
-- Fluxo separado para **treinamento** e **reconhecimento**.
-- Pronto para rodar no VS Code.
 - Suporte a **JPG, JPEG, PNG, BMP, GIF, WebP, PPM e PGM**.
+- Alternância entre motor clássico e motor com IA.
+- Fallback automático para o modo clássico quando a stack de IA não estiver disponível.
 
 ## Requisitos
 
 - Python 3.11+
 - Tkinter disponível no Python
-- Pillow instalado via `requirements.txt`
+- Pillow
+- torch
+- transformers
 
 ## Instalação
 
@@ -50,20 +72,32 @@ pip install -r requirements.txt
 python app.py
 ```
 
-## Sugestões para melhorar ainda mais
+## Dependências de IA
 
-Para melhorar a qualidade do reconhecimento:
+O modo IA usa:
 
-- Cadastre entre **5 e 20 imagens por categoria**.
-- Use imagens com **ângulos, fundos e iluminação diferentes**.
-- Evite classes muito parecidas com poucas amostras.
-- Em uma versão futura, implemente:
-  - busca por similaridade com embeddings de rede neural;
-  - painel de administração com exclusão/edição de classes;
-  - exportação/importação da base;
-  - webcam para captura ao vivo;
-  - API com FastAPI para integrar com outros sistemas;
-  - score calibrado com validação da base.
+- `torch` para inferência;
+- `transformers` para carregar o CLIP;
+- `Pillow` para leitura e pré-processamento das imagens.
+
+Modelo configurado atualmente:
+
+- `openai/clip-vit-base-patch32`
+
+## Recomendações para melhor resultado com IA
+
+- Cadastre entre **10 e 30 imagens por categoria**.
+- Use exemplos com **ângulos, fundos, iluminação e escala variados**.
+- Evite categorias visualmente muito parecidas com poucas amostras.
+- Quando possível, mantenha uma base equilibrada entre as classes.
+
+## Próximos upgrades possíveis
+
+- salvar um índice vetorial para busca mais rápida;
+- permitir exclusão/edição de amostras;
+- capturar imagens via webcam;
+- expor uma API com FastAPI;
+- trocar CLIP por um encoder mais forte ou especializado no seu domínio.
 
 ## Estrutura
 

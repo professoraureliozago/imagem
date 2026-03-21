@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import shutil
@@ -10,13 +11,6 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable
 
-try:
-    from PIL import Image, ImageOps, ImageTk
-except ImportError:  # pragma: no cover
-    Image = None
-    ImageOps = None
-    ImageTk = None
-
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 IMAGE_DIR = DATA_DIR / "images"
@@ -24,13 +18,88 @@ DB_PATH = DATA_DIR / "catalog.db"
 THUMBNAIL_SIZE = (320, 320)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ppm", ".pgm"}
 SUPPORTED_FILE_TYPES = [("Imagens", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.ppm *.pgm")]
+CLASSIC_BACKEND = "classic"
+AI_BACKEND = "ai_clip"
 
 
-def ensure_pillow_available() -> None:
-    if Image is None or ImageOps is None or ImageTk is None:
-        raise RuntimeError(
-            "Este aplicativo precisa da biblioteca Pillow para abrir JPG, JPEG, PNG, BMP, GIF e WebP. "
-            "Instale com: pip install -r requirements.txt"
+@dataclass
+class BackendStatus:
+    requested_backend: str
+    active_backend: str
+    description: str
+    ready: bool
+
+
+@dataclass
+class Sample:
+    label: str
+    image_path: Path
+    features: list[float]
+    backend: str
+
+
+class DependencyManager:
+    @staticmethod
+    def has_pillow() -> bool:
+        return importlib.util.find_spec("PIL") is not None
+
+    @staticmethod
+    def has_ai_stack() -> bool:
+        return (
+            importlib.util.find_spec("torch") is not None
+            and importlib.util.find_spec("transformers") is not None
+        )
+
+    @staticmethod
+    def ensure_pillow() -> None:
+        if not DependencyManager.has_pillow():
+            raise RuntimeError(
+                "Este aplicativo precisa da biblioteca Pillow para abrir imagens comuns. "
+                "Instale com: pip install -r requirements.txt"
+            )
+
+    @staticmethod
+    def import_pillow():
+        DependencyManager.ensure_pillow()
+        from PIL import Image, ImageOps, ImageTk
+
+        return Image, ImageOps, ImageTk
+
+    @staticmethod
+    def import_ai_stack():
+        if not DependencyManager.has_ai_stack():
+            raise RuntimeError(
+                "O modo IA precisa de torch e transformers. "
+                "Instale com: pip install -r requirements.txt"
+            )
+        import torch
+        from transformers import CLIPModel, CLIPProcessor
+
+        return torch, CLIPModel, CLIPProcessor
+
+
+class BackendManager:
+    @staticmethod
+    def get_status(requested_backend: str) -> BackendStatus:
+        if requested_backend == AI_BACKEND:
+            if DependencyManager.has_ai_stack():
+                return BackendStatus(
+                    requested_backend=AI_BACKEND,
+                    active_backend=AI_BACKEND,
+                    description="IA ativa com embeddings CLIP.",
+                    ready=True,
+                )
+            return BackendStatus(
+                requested_backend=AI_BACKEND,
+                active_backend=CLASSIC_BACKEND,
+                description="Modo IA indisponível no ambiente. Usando fallback clássico.",
+                ready=False,
+            )
+        return BackendStatus(
+            requested_backend=CLASSIC_BACKEND,
+            active_backend=CLASSIC_BACKEND,
+            description="Modo clássico ativo com hash perceptual + histograma + bordas.",
+            ready=True,
         )
 
 
@@ -44,36 +113,39 @@ def ensure_storage() -> None:
                 label TEXT NOT NULL,
                 image_path TEXT NOT NULL,
                 features TEXT NOT NULL,
+                backend TEXT NOT NULL DEFAULT 'classic',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(samples)")}
+        if "backend" not in columns:
+            conn.execute("ALTER TABLE samples ADD COLUMN backend TEXT NOT NULL DEFAULT 'classic'")
         conn.commit()
-
-
-@dataclass
-class Sample:
-    label: str
-    image_path: Path
-    features: list[float]
 
 
 class PillowImageLoader:
     @staticmethod
-    def load_rgb(path: Path) -> Image.Image:
-        ensure_pillow_available()
+    def load_rgb(path: Path):
+        Image, ImageOps, _ = DependencyManager.import_pillow()
         try:
             with Image.open(path) as image:
                 return ImageOps.exif_transpose(image).convert("RGB")
         except OSError as exc:
             raise ValueError(f"Não foi possível abrir a imagem '{path.name}'.") from exc
 
+    @staticmethod
+    def load_preview(path: Path):
+        Image, _, ImageTk = DependencyManager.import_pillow()
+        image = PillowImageLoader.load_rgb(path)
+        image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+        return ImageTk.PhotoImage(image)
 
-class FeatureExtractor:
-    """Extrai características com Pillow para suportar formatos comuns como JPG/JPEG."""
 
+class ClassicFeatureExtractor:
     @staticmethod
     def extract(image_path: Path) -> list[float]:
+        Image, _, _ = DependencyManager.import_pillow()
         image = PillowImageLoader.load_rgb(image_path)
         if image.width <= 0 or image.height <= 0:
             raise ValueError("Imagem inválida.")
@@ -83,9 +155,9 @@ class FeatureExtractor:
         pixels = list(resized.getdata())
         rows = [pixels[index * resized.width:(index + 1) * resized.width] for index in range(resized.height)]
 
-        dhash = FeatureExtractor._difference_hash(rows)
-        histogram = FeatureExtractor._color_histogram(rows)
-        edges = FeatureExtractor._edge_profile(rows)
+        dhash = ClassicFeatureExtractor._difference_hash(rows)
+        histogram = ClassicFeatureExtractor._color_histogram(rows)
+        edges = ClassicFeatureExtractor._edge_profile(rows)
         return dhash + histogram + edges
 
     @staticmethod
@@ -94,7 +166,7 @@ class FeatureExtractor:
 
     @staticmethod
     def _difference_hash(pixels: list[list[tuple[int, int, int]]]) -> list[float]:
-        gray = FeatureExtractor._to_grayscale(pixels)
+        gray = ClassicFeatureExtractor._to_grayscale(pixels)
         rows = min(8, len(gray))
         cols = min(9, len(gray[0])) if gray else 0
         if rows < 1 or cols < 2:
@@ -103,7 +175,6 @@ class FeatureExtractor:
         step_y = max(1, len(gray) // rows)
         step_x = max(1, len(gray[0]) // cols)
         sampled = [[gray[y * step_y][x * step_x] for x in range(cols)] for y in range(rows)]
-
         bits: list[float] = []
         for row in sampled:
             for idx in range(cols - 1):
@@ -130,7 +201,7 @@ class FeatureExtractor:
 
     @staticmethod
     def _edge_profile(pixels: list[list[tuple[int, int, int]]]) -> list[float]:
-        gray = FeatureExtractor._to_grayscale(pixels)
+        gray = ClassicFeatureExtractor._to_grayscale(pixels)
         h_values = []
         v_values = []
         for row in gray:
@@ -145,11 +216,48 @@ class FeatureExtractor:
         return [h_avg, v_avg]
 
 
+class AIEmbeddingExtractor:
+    MODEL_NAME = "openai/clip-vit-base-patch32"
+    _model = None
+    _processor = None
+    _device = None
+
+    @classmethod
+    def _bootstrap(cls) -> None:
+        if cls._model is not None and cls._processor is not None and cls._device is not None:
+            return
+        torch, CLIPModel, CLIPProcessor = DependencyManager.import_ai_stack()
+        cls._device = "cuda" if torch.cuda.is_available() else "cpu"
+        cls._processor = CLIPProcessor.from_pretrained(cls.MODEL_NAME)
+        cls._model = CLIPModel.from_pretrained(cls.MODEL_NAME).to(cls._device)
+        cls._model.eval()
+
+    @classmethod
+    def extract(cls, image_path: Path) -> list[float]:
+        cls._bootstrap()
+        torch, _, _ = DependencyManager.import_ai_stack()
+        image = PillowImageLoader.load_rgb(image_path)
+        inputs = cls._processor(images=image, return_tensors="pt")
+        inputs = {key: value.to(cls._device) for key, value in inputs.items()}
+        with torch.no_grad():
+            embedding = cls._model.get_image_features(**inputs)
+            embedding = embedding / embedding.norm(dim=-1, keepdim=True)
+        return embedding[0].detach().cpu().tolist()
+
+
+class FeatureExtractorFactory:
+    @staticmethod
+    def extract(image_path: Path, backend: str) -> list[float]:
+        if backend == AI_BACKEND:
+            return AIEmbeddingExtractor.extract(image_path)
+        return ClassicFeatureExtractor.extract(image_path)
+
+
 class ImageRepository:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
 
-    def add_sample(self, label: str, source_path: Path, features: list[float]) -> Path:
+    def add_sample(self, label: str, source_path: Path, features: list[float], backend: str) -> Path:
         label_slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in label).strip("_") or "classe"
         target_dir = IMAGE_DIR / label_slug
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -162,46 +270,59 @@ class ImageRepository:
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO samples (label, image_path, features) VALUES (?, ?, ?)",
-                (label.strip(), str(target_path.relative_to(APP_DIR)), json.dumps(features)),
+                "INSERT INTO samples (label, image_path, features, backend) VALUES (?, ?, ?, ?)",
+                (label.strip(), str(target_path.relative_to(APP_DIR)), json.dumps(features), backend),
             )
             conn.commit()
         return target_path
 
-    def list_samples(self) -> list[Sample]:
+    def list_samples(self, backend: str | None = None) -> list[Sample]:
+        query = "SELECT label, image_path, features, backend FROM samples"
+        params: tuple[object, ...] = ()
+        if backend is not None:
+            query += " WHERE backend = ?"
+            params = (backend,)
+        query += " ORDER BY label, created_at DESC"
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT label, image_path, features FROM samples ORDER BY label, created_at DESC"
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
-            Sample(label=row[0], image_path=APP_DIR / row[1], features=json.loads(row[2]))
+            Sample(label=row[0], image_path=APP_DIR / row[1], features=json.loads(row[2]), backend=row[3])
             for row in rows
         ]
+
+    def summarize_counts(self) -> dict[str, int]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT backend, COUNT(*) FROM samples GROUP BY backend").fetchall()
+        summary = {CLASSIC_BACKEND: 0, AI_BACKEND: 0}
+        for backend, count in rows:
+            summary[backend] = count
+        return summary
 
 
 class RecognitionService:
     def __init__(self, repository: ImageRepository) -> None:
         self.repository = repository
 
-    def recognize(self, image_path: Path) -> dict[str, object] | None:
-        samples = self.repository.list_samples()
+    def recognize(self, image_path: Path, backend: str) -> dict[str, object] | None:
+        samples = self.repository.list_samples(backend=backend)
         if not samples:
             return None
 
-        query_features = FeatureExtractor.extract(image_path)
+        query_features = FeatureExtractorFactory.extract(image_path, backend)
         scored: list[tuple[float, Sample]] = []
         for sample in samples:
-            distance = self._euclidean_distance(query_features, sample.features)
+            distance = self._distance(query_features, sample.features, backend)
             scored.append((distance, sample))
 
         scored.sort(key=lambda item: item[0])
         best_distance, best_sample = scored[0]
-        confidence = self._distance_to_confidence(best_distance)
+        confidence = self._distance_to_confidence(best_distance, backend)
         alternatives = [
             {
                 "label": sample.label,
                 "distance": round(distance, 4),
-                "confidence": round(self._distance_to_confidence(distance), 2),
+                "confidence": round(self._distance_to_confidence(distance, backend), 2),
+                "backend": sample.backend,
             }
             for distance, sample in scored[:5]
         ]
@@ -210,38 +331,48 @@ class RecognitionService:
             "distance": round(best_distance, 4),
             "confidence": round(confidence, 2),
             "sample_path": best_sample.image_path,
+            "backend": backend,
             "alternatives": alternatives,
         }
 
     @staticmethod
-    def _euclidean_distance(first: Iterable[float], second: Iterable[float]) -> float:
+    def _distance(first: Iterable[float], second: Iterable[float], backend: str) -> float:
+        if backend == AI_BACKEND:
+            dot = sum(a * b for a, b in zip(first, second, strict=True))
+            return 1.0 - dot
         return math.sqrt(sum((a - b) ** 2 for a, b in zip(first, second, strict=True)))
 
     @staticmethod
-    def _distance_to_confidence(distance: float) -> float:
-        confidence = max(0.0, min(100.0, 100.0 * math.exp(-1.4 * distance)))
-        return confidence
+    def _distance_to_confidence(distance: float, backend: str) -> float:
+        if backend == AI_BACKEND:
+            return max(0.0, min(100.0, (1.0 - distance) * 100.0))
+        return max(0.0, min(100.0, 100.0 * math.exp(-1.4 * distance)))
 
 
 class ModernImageRecognitionApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        ensure_pillow_available()
+        DependencyManager.ensure_pillow()
         ensure_storage()
         self.title("Imagem Inteligente • Cadastro e Reconhecimento")
-        self.geometry("1180x720")
-        self.minsize(980, 640)
+        self.geometry("1240x760")
+        self.minsize(1040, 680)
         self.configure(bg="#0f172a")
 
         self.repository = ImageRepository(DB_PATH)
         self.recognition_service = RecognitionService(self.repository)
         self.selected_train_images: list[Path] = []
         self.selected_recognition_image: Path | None = None
-        self._preview_photo: ImageTk.PhotoImage | None = None
+        self._preview_photo = None
+        self.mode_var = tk.StringVar(value=AI_BACKEND)
+        self.backend_info_var = tk.StringVar(value="")
+        self.dataset_info_var = tk.StringVar(value="")
+        self._last_backend_warning: str | None = None
 
         self._setup_style()
         self._build_layout()
         self.refresh_dataset_summary()
+        self.refresh_backend_status(show_message=False)
 
     def _setup_style(self) -> None:
         style = ttk.Style(self)
@@ -257,6 +388,7 @@ class ModernImageRecognitionApp(tk.Tk):
         style.configure("Treeview", background="#0b1220", fieldbackground="#0b1220", foreground="#e5e7eb", rowheight=28)
         style.configure("Treeview.Heading", background="#1f2937", foreground="#f8fafc", font=("Segoe UI Semibold", 10))
         style.configure("TEntry", fieldbackground="#0b1220", foreground="#f8fafc")
+        style.configure("TRadiobutton", background="#111827", foreground="#e5e7eb")
 
     def _build_layout(self) -> None:
         root = ttk.Frame(self)
@@ -270,7 +402,7 @@ class ModernImageRecognitionApp(tk.Tk):
         ttk.Label(header, text="Sistema de Reconhecimento de Imagens", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Cadastre imagens por categoria, treine a base localmente e identifique novas imagens com suporte a JPG, JPEG, PNG, BMP, GIF e WebP.",
+            text="Agora com modo IA via CLIP para embeddings semânticos e fallback clássico para ambientes sem a stack de IA.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(6, 0))
 
@@ -285,15 +417,37 @@ class ModernImageRecognitionApp(tk.Tk):
         self._build_training_section(left_panel)
         self._build_recognition_section(right_panel)
 
+    def _build_mode_selector(self, parent: ttk.Frame) -> None:
+        mode_frame = ttk.Frame(parent, style="Card.TFrame")
+        mode_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(mode_frame, text="Motor de reconhecimento:", style="Section.TLabel").pack(anchor="w")
+        ttk.Radiobutton(
+            mode_frame,
+            text="IA (CLIP embeddings)",
+            value=AI_BACKEND,
+            variable=self.mode_var,
+            command=self.refresh_backend_status,
+        ).pack(anchor="w", pady=(8, 0))
+        ttk.Radiobutton(
+            mode_frame,
+            text="Clássico (hash + histograma + bordas)",
+            value=CLASSIC_BACKEND,
+            variable=self.mode_var,
+            command=self.refresh_backend_status,
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(mode_frame, textvariable=self.backend_info_var).pack(anchor="w", pady=(8, 0))
+        ttk.Label(mode_frame, textvariable=self.dataset_info_var).pack(anchor="w", pady=(4, 0))
+
     def _build_training_section(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="1. Cadastro para treinamento", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        self._build_mode_selector(parent)
+        ttk.Label(parent, text="1. Cadastro para treinamento", style="Section.TLabel").grid(row=1, column=0, sticky="w")
         ttk.Label(
             parent,
-            text="Selecione imagens semelhantes e informe o nome da classe (ex.: maçã, caneca, logotipo).",
-        ).grid(row=1, column=0, sticky="w", pady=(6, 12))
+            text="Cadastre imagens semelhantes para treinar a base do backend selecionado.",
+        ).grid(row=2, column=0, sticky="w", pady=(6, 12))
 
         form = ttk.Frame(parent, style="Card.TFrame")
-        form.grid(row=2, column=0, sticky="ew")
+        form.grid(row=3, column=0, sticky="ew")
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="Nome da categoria:").grid(row=0, column=0, sticky="w")
@@ -301,28 +455,30 @@ class ModernImageRecognitionApp(tk.Tk):
         self.label_entry.grid(row=0, column=1, sticky="ew", padx=(12, 0))
 
         actions = ttk.Frame(parent, style="Card.TFrame")
-        actions.grid(row=3, column=0, sticky="ew", pady=(12, 12))
+        actions.grid(row=4, column=0, sticky="ew", pady=(12, 12))
         ttk.Button(actions, text="Selecionar imagens", style="Accent.TButton", command=self.select_training_images).pack(side="left")
         ttk.Button(actions, text="Cadastrar no sistema", command=self.save_training_samples).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Atualizar lista", command=self.refresh_dataset_summary).pack(side="left", padx=(10, 0))
 
         self.selected_files_label = ttk.Label(parent, text="Nenhuma imagem selecionada.")
-        self.selected_files_label.grid(row=4, column=0, sticky="w", pady=(0, 12))
+        self.selected_files_label.grid(row=5, column=0, sticky="w", pady=(0, 12))
 
-        columns = ("categoria", "arquivo")
+        columns = ("categoria", "arquivo", "motor")
         self.dataset_tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
         self.dataset_tree.heading("categoria", text="Categoria")
         self.dataset_tree.heading("arquivo", text="Arquivo")
+        self.dataset_tree.heading("motor", text="Motor")
         self.dataset_tree.column("categoria", width=160, anchor="w")
-        self.dataset_tree.column("arquivo", width=420, anchor="w")
-        self.dataset_tree.grid(row=5, column=0, sticky="nsew")
-        parent.rowconfigure(5, weight=1)
+        self.dataset_tree.column("arquivo", width=330, anchor="w")
+        self.dataset_tree.column("motor", width=110, anchor="center")
+        self.dataset_tree.grid(row=6, column=0, sticky="nsew")
+        parent.rowconfigure(6, weight=1)
 
     def _build_recognition_section(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="2. Reconhecimento", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             parent,
-            text="Escolha uma imagem e compare com o cadastro salvo localmente.",
+            text="Escolha uma imagem e compare usando o motor ativo no momento.",
         ).grid(row=1, column=0, sticky="w", pady=(6, 12))
 
         actions = ttk.Frame(parent, style="Card.TFrame")
@@ -336,7 +492,7 @@ class ModernImageRecognitionApp(tk.Tk):
 
         self.result_text = tk.Text(
             parent,
-            height=12,
+            height=14,
             bg="#0b1220",
             fg="#e5e7eb",
             insertbackground="#e5e7eb",
@@ -345,14 +501,43 @@ class ModernImageRecognitionApp(tk.Tk):
             wrap="word",
         )
         self.result_text.grid(row=4, column=0, sticky="ew")
-        self.result_text.insert(
-            "1.0",
+        self._set_result_text(
             "Sugestão de uso:\n"
-            "• Cadastre entre 5 e 20 imagens por categoria.\n"
-            "• Misture ângulos, iluminação e fundos diferentes.\n"
-            "• Formatos suportados: JPG, JPEG, PNG, BMP, GIF, WebP, PPM e PGM.",
+            "• Para IA, cadastre amostras no modo CLIP e reconheça também nesse modo.\n"
+            "• Para um resultado semântico melhor, use classes bem definidas e mais imagens por classe.\n"
+            "• Se a stack de IA não estiver instalada, o app volta automaticamente ao modo clássico."
         )
+
+    def _set_result_text(self, text: str) -> None:
+        self.result_text.configure(state="normal")
+        self.result_text.delete("1.0", tk.END)
+        self.result_text.insert("1.0", text)
         self.result_text.configure(state="disabled")
+
+    def get_active_backend(self) -> str:
+        status = BackendManager.get_status(self.mode_var.get())
+        return status.active_backend
+
+    def refresh_backend_status(self, show_message: bool = True) -> None:
+        status = BackendManager.get_status(self.mode_var.get())
+        self.backend_info_var.set(f"Status do motor: {status.description}")
+        if show_message and not status.ready and self._last_backend_warning != status.description:
+            messagebox.showwarning("Modo IA indisponível", status.description)
+            self._last_backend_warning = status.description
+        if status.ready:
+            self._last_backend_warning = None
+        self.refresh_dataset_summary()
+
+    def refresh_dataset_summary(self) -> None:
+        for item in self.dataset_tree.get_children():
+            self.dataset_tree.delete(item)
+        for sample in self.repository.list_samples():
+            motor = "IA" if sample.backend == AI_BACKEND else "Clássico"
+            self.dataset_tree.insert("", "end", values=(sample.label, sample.image_path.name, motor))
+        counts = self.repository.summarize_counts()
+        self.dataset_info_var.set(
+            f"Base treinada: {counts.get(AI_BACKEND, 0)} amostras IA | {counts.get(CLASSIC_BACKEND, 0)} amostras clássicas"
+        )
 
     def select_training_images(self) -> None:
         files = filedialog.askopenfilenames(
@@ -363,7 +548,10 @@ class ModernImageRecognitionApp(tk.Tk):
         if self.selected_train_images:
             names = ", ".join(path.name for path in self.selected_train_images[:3])
             extra = "" if len(self.selected_train_images) <= 3 else f" ... (+{len(self.selected_train_images) - 3})"
-            self.selected_files_label.config(text=f"{len(self.selected_train_images)} imagem(ns): {names}{extra}")
+            backend_label = "IA" if self.get_active_backend() == AI_BACKEND else "Clássico"
+            self.selected_files_label.config(
+                text=f"{len(self.selected_train_images)} imagem(ns) para o motor {backend_label}: {names}{extra}"
+            )
         else:
             self.selected_files_label.config(text="Nenhuma imagem selecionada.")
 
@@ -376,26 +564,31 @@ class ModernImageRecognitionApp(tk.Tk):
             messagebox.showwarning("Imagens obrigatórias", "Selecione uma ou mais imagens para treinamento.")
             return
 
+        backend = self.get_active_backend()
         saved_count = 0
+        ignored_count = 0
         for image_path in self.selected_train_images:
             try:
-                features = FeatureExtractor.extract(image_path)
-                self.repository.add_sample(label, image_path, features)
+                features = FeatureExtractorFactory.extract(image_path, backend)
+                self.repository.add_sample(label, image_path, features, backend)
                 saved_count += 1
             except ValueError as exc:
+                ignored_count += 1
                 messagebox.showwarning("Imagem ignorada", f"{image_path.name}: {exc}")
+            except RuntimeError as exc:
+                messagebox.showerror("Dependência ausente", str(exc))
+                return
 
         self.label_entry.delete(0, tk.END)
         self.selected_train_images = []
         self.selected_files_label.config(text="Nenhuma imagem selecionada.")
         self.refresh_dataset_summary()
-        messagebox.showinfo("Treinamento atualizado", f"{saved_count} imagem(ns) cadastrada(s) na categoria '{label}'.")
-
-    def refresh_dataset_summary(self) -> None:
-        for item in self.dataset_tree.get_children():
-            self.dataset_tree.delete(item)
-        for sample in self.repository.list_samples():
-            self.dataset_tree.insert("", "end", values=(sample.label, sample.image_path.name))
+        backend_name = "IA (CLIP)" if backend == AI_BACKEND else "Clássico"
+        messagebox.showinfo(
+            "Treinamento atualizado",
+            f"{saved_count} imagem(ns) cadastrada(s) na categoria '{label}' usando o motor {backend_name}. "
+            f"Ignoradas: {ignored_count}.",
+        )
 
     def select_recognition_image(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -409,12 +602,10 @@ class ModernImageRecognitionApp(tk.Tk):
 
     def _load_preview(self, image_path: Path) -> None:
         try:
-            image = PillowImageLoader.load_rgb(image_path)
+            self._preview_photo = PillowImageLoader.load_preview(image_path)
         except ValueError as exc:
             messagebox.showwarning("Formato não suportado", str(exc))
             return
-        image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-        self._preview_photo = ImageTk.PhotoImage(image)
         self.preview_label.configure(image=self._preview_photo, text="")
 
     def run_recognition(self) -> None:
@@ -422,23 +613,33 @@ class ModernImageRecognitionApp(tk.Tk):
             messagebox.showwarning("Imagem obrigatória", "Escolha uma imagem para reconhecimento.")
             return
 
+        backend = self.get_active_backend()
         try:
-            result = self.recognition_service.recognize(self.selected_recognition_image)
+            result = self.recognition_service.recognize(self.selected_recognition_image, backend)
         except ValueError as exc:
             messagebox.showwarning("Erro no reconhecimento", str(exc))
             return
+        except RuntimeError as exc:
+            messagebox.showerror("Dependência ausente", str(exc))
+            return
 
         if result is None:
-            messagebox.showwarning("Base vazia", "Cadastre imagens de treinamento antes de realizar o reconhecimento.")
+            backend_name = "IA (CLIP)" if backend == AI_BACKEND else "Clássico"
+            messagebox.showwarning(
+                "Base vazia",
+                f"Cadastre imagens de treinamento para o motor {backend_name} antes de reconhecer.",
+            )
             return
 
         confidence = result["confidence"]
         decision = "Correspondência forte" if confidence >= 70 else "Correspondência aproximada"
+        backend_name = "IA (CLIP)" if backend == AI_BACKEND else "Clássico"
         alternative_lines = [
             f"- {item['label']}: confiança {item['confidence']}% | distância {item['distance']}"
             for item in result["alternatives"]
         ]
         output = (
+            f"Motor ativo: {backend_name}\n"
             f"Resultado principal: {result['label']}\n"
             f"Nível de confiança: {confidence}%\n"
             f"Distância vetorial: {result['distance']}\n"
@@ -446,10 +647,7 @@ class ModernImageRecognitionApp(tk.Tk):
             "Top correspondências:\n"
             + "\n".join(alternative_lines)
         )
-        self.result_text.configure(state="normal")
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert("1.0", output)
-        self.result_text.configure(state="disabled")
+        self._set_result_text(output)
 
 
 def main() -> None:
