@@ -152,8 +152,11 @@ class ClassicFeatureExtractor:
 
         resized = image.copy()
         resized.thumbnail((64, 64), Image.Resampling.LANCZOS)
-        pixels = list(resized.getdata())
-        rows = [pixels[index * resized.width:(index + 1) * resized.width] for index in range(resized.height)]
+        pixel_access = resized.load()
+        rows = [
+            [pixel_access[x, y] for x in range(resized.width)]
+            for y in range(resized.height)
+        ]
 
         dhash = ClassicFeatureExtractor._difference_hash(rows)
         histogram = ClassicFeatureExtractor._color_histogram(rows)

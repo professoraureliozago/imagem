@@ -58,18 +58,44 @@ O modo clássico continua disponível como fallback e também como baseline loca
 - torch
 - transformers
 
-## Instalação
+## Instalação no Windows
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+### Opção 1 — PowerShell com ajuste temporário da política de execução
+
+Se aparecer o erro **"a execução de scripts foi desabilitada neste sistema"**, execute primeiro:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-## Execução
+Depois crie e ative o ambiente virtual:
 
-```bash
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 python app.py
+```
+
+> Esse ajuste vale apenas para a janela atual do PowerShell.
+
+### Opção 2 — Prompt de Comando (CMD), sem mexer na policy do PowerShell
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+python app.py
+```
+
+### Opção 3 — Sem ativar o ambiente virtual
+
+Se preferir, você pode usar o Python do ambiente virtual diretamente:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ```
 
 ## Dependências de IA
@@ -90,6 +116,16 @@ Modelo configurado atualmente:
 - Use exemplos com **ângulos, fundos, iluminação e escala variados**.
 - Evite categorias visualmente muito parecidas com poucas amostras.
 - Quando possível, mantenha uma base equilibrada entre as classes.
+
+## Problemas comuns
+
+### 1. "Modo IA indisponível no ambiente"
+
+Isso acontece quando `torch` e `transformers` não estão instalados corretamente no ambiente usado para executar o app.
+
+### 2. Erro no PowerShell ao ativar `.venv`
+
+Esse erro ocorre por causa da política de execução de scripts do Windows/PowerShell, não por erro do projeto. Use uma das opções mostradas na seção **Instalação no Windows**.
 
 ## Próximos upgrades possíveis
 
