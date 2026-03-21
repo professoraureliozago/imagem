@@ -236,13 +236,21 @@ class AIEmbeddingExtractor:
         cls._model.eval()
 
     @classmethod
+    def _project_if_needed(cls, pooled, torch):
+        projection = getattr(cls._model, "visual_projection", None)
+        if projection is None:
+            return pooled
+        in_features = getattr(projection, "in_features", None)
+        if in_features is not None and pooled.shape[-1] == in_features:
+            return projection(pooled)
+        return pooled
+
+    @classmethod
     def _coerce_embedding_tensor(cls, raw_output, torch):
         if hasattr(raw_output, "image_embeds") and raw_output.image_embeds is not None:
             return raw_output.image_embeds
         if hasattr(raw_output, "pooler_output") and raw_output.pooler_output is not None:
-            pooled = raw_output.pooler_output
-            projection = getattr(cls._model, "visual_projection", None)
-            return projection(pooled) if projection is not None else pooled
+            return cls._project_if_needed(raw_output.pooler_output, torch)
         if isinstance(raw_output, (tuple, list)) and raw_output:
             first_item = raw_output[0]
             if hasattr(first_item, "shape"):
@@ -262,8 +270,11 @@ class AIEmbeddingExtractor:
         inputs = cls._processor(images=image, return_tensors="pt")
         inputs = {key: value.to(cls._device) for key, value in inputs.items()}
         with torch.no_grad():
-            raw_output = cls._model.get_image_features(**inputs)
+            raw_output = cls._model(**inputs)
             embedding = cls._coerce_embedding_tensor(raw_output, torch)
+            if embedding.shape[-1] not in (512, 768):
+                fallback_output = cls._model.get_image_features(**inputs)
+                embedding = cls._coerce_embedding_tensor(fallback_output, torch)
             embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
         return embedding[0].detach().cpu().tolist()
 

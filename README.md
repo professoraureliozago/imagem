@@ -131,6 +131,10 @@ Esse erro ocorre por causa da política de execução de scripts do Windows/Powe
 
 Esse erro pode acontecer com combinações específicas de versões do `transformers`/CLIP, quando a saída do modelo não vem diretamente como tensor já pronto para normalização. O projeto foi ajustado para tratar esse retorno de forma compatível antes de normalizar o embedding.
 
+### 4. `mat1 and mat2 shapes cannot be multiplied (1x512 and 768x512)`
+
+Esse erro acontece quando uma projeção visual do CLIP é aplicada sobre um embedding que já estava projetado, gerando incompatibilidade de dimensões. O projeto foi ajustado para usar primeiro `image_embeds` da saída completa do modelo e só projetar `pooler_output` quando as dimensões realmente forem compatíveis.
+
 ## Próximos upgrades possíveis
 
 - salvar um índice vetorial para busca mais rápida;
