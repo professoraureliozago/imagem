@@ -127,6 +127,10 @@ Isso acontece quando `torch` e `transformers` não estão instalados corretament
 
 Esse erro ocorre por causa da política de execução de scripts do Windows/PowerShell, não por erro do projeto. Use uma das opções mostradas na seção **Instalação no Windows**.
 
+### 3. `AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'norm'`
+
+Esse erro pode acontecer com combinações específicas de versões do `transformers`/CLIP, quando a saída do modelo não vem diretamente como tensor já pronto para normalização. O projeto foi ajustado para tratar esse retorno de forma compatível antes de normalizar o embedding.
+
 ## Próximos upgrades possíveis
 
 - salvar um índice vetorial para busca mais rápida;

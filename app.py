@@ -236,6 +236,25 @@ class AIEmbeddingExtractor:
         cls._model.eval()
 
     @classmethod
+    def _coerce_embedding_tensor(cls, raw_output, torch):
+        if hasattr(raw_output, "image_embeds") and raw_output.image_embeds is not None:
+            return raw_output.image_embeds
+        if hasattr(raw_output, "pooler_output") and raw_output.pooler_output is not None:
+            pooled = raw_output.pooler_output
+            projection = getattr(cls._model, "visual_projection", None)
+            return projection(pooled) if projection is not None else pooled
+        if isinstance(raw_output, (tuple, list)) and raw_output:
+            first_item = raw_output[0]
+            if hasattr(first_item, "shape"):
+                return first_item
+        if hasattr(raw_output, "shape"):
+            return raw_output
+        raise RuntimeError(
+            "Não foi possível converter a saída do modelo CLIP em embedding. "
+            "Verifique a versão do transformers/torch instalada."
+        )
+
+    @classmethod
     def extract(cls, image_path: Path) -> list[float]:
         cls._bootstrap()
         torch, _, _ = DependencyManager.import_ai_stack()
@@ -243,8 +262,9 @@ class AIEmbeddingExtractor:
         inputs = cls._processor(images=image, return_tensors="pt")
         inputs = {key: value.to(cls._device) for key, value in inputs.items()}
         with torch.no_grad():
-            embedding = cls._model.get_image_features(**inputs)
-            embedding = embedding / embedding.norm(dim=-1, keepdim=True)
+            raw_output = cls._model.get_image_features(**inputs)
+            embedding = cls._coerce_embedding_tensor(raw_output, torch)
+            embedding = torch.nn.functional.normalize(embedding, p=2, dim=-1)
         return embedding[0].detach().cpu().tolist()
 
 
